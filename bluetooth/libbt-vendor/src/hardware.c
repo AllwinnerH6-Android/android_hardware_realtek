@@ -1,6 +1,6 @@
 /******************************************************************************
  *
- *  Copyright (C) 2009-2012 Realtek Corporation
+ *  Copyright (C) 2009-2018 Realtek Corporation
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -27,7 +27,7 @@
  ******************************************************************************/
 
 #define LOG_TAG "bt_hwcfg"
-#define RTKBT_RELEASE_NAME "20181030_BT_ANDROID_9.0"
+#define RTKBT_RELEASE_NAME "20190125_BT_ANDROID_9.0"
 
 #include <utils/Log.h>
 #include <sys/types.h>
@@ -92,17 +92,32 @@ static bt_lpm_param_t lpm_param =
 int getmacaddr(unsigned char * addr)
 {
     int i = 0;
+    char data[256], *str;
+    int addr_fd;
 
-    if ((vnd_local_bd_addr[0] == 0) && (vnd_local_bd_addr[0] == 0)
-            && (vnd_local_bd_addr[0] == 0) && (vnd_local_bd_addr[0] == 0)
-            && (vnd_local_bd_addr[0] == 0) && (vnd_local_bd_addr[0] == 0)) {
-        return -1;
-    } else {
-        for (i = 0; i < 6; i++) {
-            addr[5-i] = (unsigned char)vnd_local_bd_addr[i];
+    char property[100] = {0};
+    if (property_get("persist.vendor.rtkbt.bdaddr_path", property, "default")) {
+        if (strcmp(property, "none") == 0) {
+            return -1;
         }
-        return 0;
+        else if (strcmp(property, "default") == 0) {
+            for (i = 0; i < 6; i++)
+                addr[5-i] = (unsigned char)vnd_local_bd_addr[i];
+            return 0;
+        }
+        else if ((addr_fd = open(property, O_RDONLY)) != -1)
+        {
+            memset(data, 0, sizeof(data));
+            read(addr_fd, data, 17);
+            for (i = 0,str = data; i < 6; i++) {
+                addr[5-i] = (unsigned char)strtoul(str, &str, 16);
+                str++;
+            }
+            close(addr_fd);
+            return 0;
+        }
     }
+    return -1;
 }
 
 int rtk_get_bt_firmware(uint8_t** fw_buf, char* fw_short_name)

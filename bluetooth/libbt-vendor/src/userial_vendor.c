@@ -1,6 +1,6 @@
 /******************************************************************************
  *
- *  Copyright (C) 2009-2012 Realtek Corporation
+ *  Copyright (C) 2009-2018 Realtek Corporation
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -164,6 +164,8 @@ static int received_packet_bytes_need = 0;
 static serial_data_type_t recv_packet_current_type = 0;
 static unsigned char received_resvered_header[2048] = {0};
 static int received_resvered_length = 0;
+static rtkbt_version_t rtkbt_version;
+static rtkbt_lescn_t  rtkbt_adv_con;
 #endif
 
 static rtk_parse_manager_t * rtk_parse_manager = NULL;
@@ -274,6 +276,7 @@ void userial_ioctl_init_bt_wake(int fd)
 *******************************************************************************/
 void userial_vendor_init(char *bt_device_node)
 {
+    memset(&rtkbt_adv_con, 0, sizeof(rtkbt_lescn_t));
     vnd_userial.fd = -1;
     char value[100];
     snprintf(vnd_userial.port_name, VND_PORT_NAME_MAXLEN, "%s", \
@@ -834,10 +837,8 @@ static int userial_coex_recv_data_handler(unsigned char * recv_buffer, int total
                     acl_length = *(uint16_t *)&coex_resvered_buffer[2];
                     l2cap_length = *(uint16_t *)&coex_resvered_buffer[4];
                     boundary_flag = RTK_GET_BOUNDARY_FLAG(handle);
-                    if (boundary_flag == RTK_START_PACKET_BOUNDARY) {
-                        if(rtk_parse_manager)
-                            rtk_parse_manager->rtk_parse_l2cap_data(coex_resvered_buffer, 0);
-                    }
+                    if(rtk_parse_manager)
+                        rtk_parse_manager->rtk_parse_l2cap_data(coex_resvered_buffer, 0);
                 break;
 
                 case DATA_TYPE_SCO:
@@ -894,10 +895,8 @@ static void userial_coex_send_data_handler(unsigned char * send_buffer, int tota
             acl_length = *(uint16_t *)&send_buffer[3];
             l2cap_length = *(uint16_t *)&send_buffer[5];
             boundary_flag = RTK_GET_BOUNDARY_FLAG(handle);
-            if (boundary_flag == RTK_START_PACKET_BOUNDARY) {
-                if(rtk_parse_manager)
-                    rtk_parse_manager->rtk_parse_l2cap_data(&send_buffer[1], 1);
-            }
+            if(rtk_parse_manager)
+                rtk_parse_manager->rtk_parse_l2cap_data(&send_buffer[1], 1);
 
         break;
 
@@ -1262,22 +1261,67 @@ static void* userial_socket_sco_thread(void *arg)
 #endif
 
 #ifdef RTK_HANDLE_CMD
+static void userial_send_personal_cmd(unsigned char * recv_buffer, int total_length)
+{
+    if(rtkbt_transtype & RTKBT_TRANS_H4) {
+        h4_int_transmit_data(recv_buffer, total_length);
+    }
+    else {
+        h5_int_interface->h5_send_cmd(DATA_TYPE_COMMAND, &recv_buffer[1], (total_length - 1));
+    }
+    userial_enqueue_coex_rawdata(recv_buffer, total_length, false);
+}
+
 static void userial_handle_cmd(unsigned char * recv_buffer, int total_length)
 {
     RTK_UNUSED(total_length);
     uint16_t opcode = *(uint16_t*)recv_buffer;
     uint16_t scan_int, scan_win;
     static uint16_t voice_settings;
+    char prop_value[100];
     switch (opcode) {
         case HCI_BLE_WRITE_SCAN_PARAMS :
             scan_int = *(uint16_t*)&recv_buffer[4];
             scan_win = *(uint16_t*)&recv_buffer[6];
             if(scan_win > 20){
-                *(uint16_t*)&recv_buffer[4] = (scan_int * 20) / scan_win;
-                *(uint16_t*)&recv_buffer[6] = 20;
+                if((scan_int/scan_win) > 2) {
+                  *(uint16_t*)&recv_buffer[4] = (scan_int * 20) / scan_win;
+                  *(uint16_t*)&recv_buffer[6] = 20;
+                }
+                else {
+                  *(uint16_t*)&recv_buffer[4] = 40;
+                  *(uint16_t*)&recv_buffer[6] = 20;
+                }
+            }
+            else if(scan_win == scan_int) {
+              *(uint16_t*)&recv_buffer[4] = (scan_int * 5) & 0xFE;
+            }
+            else if((scan_int/scan_win) <= 2) {
+              *(uint16_t*)&recv_buffer[4] = (scan_int * 3) & 0xFE;
             }
         break;
 
+        case HCI_LE_SET_EXTENDED_SCAN_PARAMETERS:
+            scan_int = *(uint16_t*)&recv_buffer[7];
+            scan_win = *(uint16_t*)&recv_buffer[9];
+            if(scan_win > 20){
+                if((scan_int/scan_win) > 2) {
+                    *(uint16_t*)&recv_buffer[7] = (scan_int * 20) / scan_win;
+                    *(uint16_t*)&recv_buffer[9] = 20;
+                }
+                else {
+                    *(uint16_t*)&recv_buffer[7] = 40;
+                    *(uint16_t*)&recv_buffer[9] = 20;
+                }
+            }
+            else if(scan_win == scan_int) {
+              *(uint16_t*)&recv_buffer[7] = (scan_int * 5) & 0xFE;
+            }
+            else if((scan_int/scan_win) <= 2) {
+              *(uint16_t*)&recv_buffer[9] = (scan_int * 3) & 0xFE;
+            }
+
+        break;
 
         case HCI_WRITE_VOICE_SETTINGS :
             voice_settings = *(uint16_t*)&recv_buffer[3];
@@ -1307,6 +1351,53 @@ static void userial_handle_cmd(unsigned char * recv_buffer, int total_length)
           Heartbeat_init();
         break;
 
+        case HCI_ACCEPT_CONNECTION_REQUEST:
+          property_get("persist.bluetooth.prefferedrole", prop_value, "none");
+          if(strcmp(prop_value, "none") != 0) {
+              int role = recv_buffer[9];
+              if(role == 0x01 && (strcmp(prop_value, "master") == 0))
+                recv_buffer[9] = 0x00;
+              else if(role == 0x00 && (strcmp(prop_value, "slave") == 0))
+                recv_buffer[9] = 0x01;
+          }
+        break;
+
+        case HCI_BLE_WRITE_ADV_PARAMS:
+        {
+            if(rtkbt_version.hci_version> HCI_PROTO_VERSION_4_2) {
+                break;
+            }
+            rtkbt_adv_con.adverting_type = recv_buffer[7];
+        }
+        break;
+        case HCI_BLE_WRITE_ADV_ENABLE:
+        {
+            if(rtkbt_version.hci_version > HCI_PROTO_VERSION_4_2) {
+                break;
+            }
+            if(recv_buffer[2] == 0x01) {
+                rtkbt_adv_con.adverting_start = TRUE;
+            }
+            else if(recv_buffer[2] == 0x00) {
+                rtkbt_adv_con.adverting_type = 0;
+                rtkbt_adv_con.adverting_enable = FALSE;
+                rtkbt_adv_con.adverting_start = FALSE;
+            }
+        }
+        break;
+        case HCI_BLE_CREATE_LL_CONN:
+          if(rtkbt_version.hci_version > HCI_PROTO_VERSION_4_2) {
+              break;
+          }
+          if(rtkbt_adv_con.adverting_enable &&
+            ((rtkbt_adv_con.adverting_type == 0x00) ||
+            (rtkbt_adv_con.adverting_type == 0x01) ||
+            (rtkbt_adv_con.adverting_type == 0x04))) {
+              uint8_t disable_adv_cmd[5] = {0x01, 0x0A, 0x20, 0x01, 0x00};
+              rtkbt_adv_con.adverting_enable = FALSE;
+              userial_send_personal_cmd(disable_adv_cmd, 5);
+          }
+        break;
         default:
         break;
     }
@@ -1498,6 +1589,28 @@ static void userial_handle_event(unsigned char * recv_buffer, int total_length)
     uint8_t *p_data = recv_buffer;
     event = p_data[0];
     switch (event) {
+    case HCI_COMMAND_COMPLETE_EVT:
+    {
+        uint16_t opcode = *((uint16_t*)&p_data[3]);
+        uint8_t* stream = &p_data[6];
+        if(opcode == HCI_READ_LOCAL_VERSION_INFO) {
+            STREAM_TO_UINT8(rtkbt_version.hci_version, stream);
+            STREAM_TO_UINT16(rtkbt_version.hci_revision, stream);
+            STREAM_TO_UINT8(rtkbt_version.lmp_version, stream);
+            STREAM_TO_UINT16(rtkbt_version.manufacturer, stream);
+            STREAM_TO_UINT16(rtkbt_version.lmp_subversion, stream);
+        }
+        else if(opcode == HCI_BLE_WRITE_ADV_ENABLE){
+            if(rtkbt_version.hci_version > HCI_PROTO_VERSION_4_2) {
+                break;
+            }
+            if(rtkbt_adv_con.adverting_start &&(p_data[5] == HCI_SUCCESS)) {
+                rtkbt_adv_con.adverting_enable = TRUE;
+                rtkbt_adv_con.adverting_start = FALSE;
+            }
+        }
+    }
+    break;
 #ifdef CONFIG_SCO_OVER_HCI
     case HCI_ESCO_CONNECTION_COMP_EVT: {
         if(p_data[2] != 0) {
@@ -1829,7 +1942,7 @@ void userial_recv_rawdata_hook(unsigned char *buffer, unsigned int total_length)
       uint16_t transmitted_length = 0;
       unsigned int real_length = total_length;
 
-      while (total_length > 0) {
+      while (vnd_userial.thread_running && (total_length > 0)) {
           ssize_t ret;
           RTK_NO_INTR(ret = write(vnd_userial.uart_fd[1], buffer + transmitted_length, total_length));
           switch (ret) {
@@ -1847,7 +1960,7 @@ void userial_recv_rawdata_hook(unsigned char *buffer, unsigned int total_length)
           }
       }
   done:;
-      if(real_length)
+      if(real_length && vnd_userial.thread_running)
           userial_enqueue_coex_rawdata(buffer, real_length, true);
       return;
 

@@ -1,6 +1,6 @@
 /******************************************************************************
  *
- *  Copyright (C) 2009-2012 Realtek Corporation
+ *  Copyright (C) 2009-2018 Realtek Corporation
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -57,7 +57,7 @@
 #define RTKBT_TRANS_H4          0x20
 #define RTKBT_TRANS_H5          0x10
 #define RTKBT_TRANS_UART        0x01
-#define RTKBT_TRANS_USB         0x20
+#define RTKBT_TRANS_USB         0x02
 
 #ifndef FALSE
 #define FALSE  0
