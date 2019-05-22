@@ -182,8 +182,9 @@ private:
 wifi_error wifi_get_link_stats(wifi_request_id id,
         wifi_interface_handle iface, wifi_stats_result_handler handler)
 {
-    GetLinkStatsCommand command(iface, handler);
-    return (wifi_error) command.requestResponse();
+    //GetLinkStatsCommand command(iface, handler);
+    //return (wifi_error) command.requestResponse();
+    return WIFI_SUCCESS;
 }
 
 wifi_error wifi_set_link_stats(
